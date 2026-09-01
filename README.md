@@ -9,9 +9,15 @@ gws). Same shape: SQLite state, single `tick` engine, dry-run by default.
 
 ## Auth
 
-Slack session credentials come from the 1Password item `Slack API`
-(`xoxc_token` + `xoxd_cookie`). Both are required by Slack's web API. Sends
+Slack session credentials come from a 1Password item (default `Slack API`,
+override with `COLDSLACK_OP_ITEM` / `COLDSLACK_OP_VAULT`) with fields
+`xoxc_token` and `xoxd_cookie`. Both are required by Slack's web API. Sends
 go out as the authenticated user in that workspace.
+
+A small gated wire-in to cold-cli: sends are blocked unless
+`COLDSLACK_ALLOW_SEND` carries the unlock token printed by a blocked tick.
+Keep the unlock in a private `~/.coldslack/tick.sh` runner; activation of a
+campaign is the human approval step.
 
 ## Usage
 

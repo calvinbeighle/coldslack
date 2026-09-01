@@ -6,8 +6,9 @@ all remaining steps for that lead. State in SQLite, single tick engine,
 gated like cold-cli: tick sends unless --dry-run, but live sends require
 the COLDSLACK_ALLOW_SEND unlock (carried by ~/.coldslack/tick.sh).
 
-Auth: Slack session credentials from 1Password item "Slack API"
-(xoxc_token + xoxd_cookie, both required by Slack's web API).
+Auth: Slack session credentials from a 1Password item (default "Slack API",
+override via COLDSLACK_OP_ITEM / COLDSLACK_OP_VAULT) with fields
+xoxc_token + xoxd_cookie, both required by Slack's web API.
 """
 
 import argparse
@@ -26,8 +27,8 @@ from pathlib import Path
 
 STATE_DIR = Path.home() / ".coldslack"
 DB_PATH = STATE_DIR / "data.db"
-OP_ITEM = "Slack API"
-OP_VAULT = "RWS Agent Secrets"
+OP_ITEM = os.environ.get("COLDSLACK_OP_ITEM", "Slack API")
+OP_VAULT = os.environ.get("COLDSLACK_OP_VAULT")
 SEND_WINDOW = (9, 17)  # local hours, inclusive start / exclusive end
 SEND_DAYS = {0, 1, 2, 3, 4}  # Mon-Fri
 GAP_SECONDS = (120, 300)  # Slack automation needs minutes between actions, not seconds
@@ -75,7 +76,9 @@ def db():
 
 def op_field(field):
     return subprocess.run(
-        ["op", "item", "get", OP_ITEM, "--vault", OP_VAULT, "--fields", field, "--reveal"],
+        ["op", "item", "get", OP_ITEM]
+        + (["--vault", OP_VAULT] if OP_VAULT else [])
+        + ["--fields", field, "--reveal"],
         capture_output=True,
         text=True,
         check=True,
