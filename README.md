@@ -18,6 +18,9 @@ Single-file Python 3, stdlib only. Tested on macOS with Python 3.14.
    - polls each active lead's DM channel; any message from the lead after
      our first send marks the lead `replied` and flips their pending sends
      to `cancelled`
+   - if the DM is quiet, also checks shared channels via `search.messages`:
+     a message from the lead in any channel we can read that mentions the
+     authenticated user (`<@me>`) after our first send counts as a reply too
    - sends due steps (campaign `active`, lead `pending`, `send_at` in the
      past, inside the send window), with a randomized 2-5 minute gap between
      sends in the same tick
@@ -100,6 +103,10 @@ U0XXXXXXXXX,Jane
 - **Send window**: Mon-Fri 09:00-17:00 local, hardcoded (`SEND_WINDOW`,
   `SEND_DAYS` at the top of the file). Outside it, tick sends nothing and
   says so. `--ignore-window` overrides (meant for testing).
+- **Channel detection** requires `search.messages`, which user-session
+  tokens support; if search is unavailable the tool silently falls back to
+  DM-only detection. Plain channel chatter from the lead does NOT cancel a
+  sequence; only messages that mention the authenticated user do.
 - **Reply detection** only sees messages from OTHER users: a lead whose
   `slack_user_id` is the authenticated user (a self-DM test) can never be
   marked replied, because own messages are filtered out.

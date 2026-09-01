@@ -123,6 +123,27 @@ class Slack:
     def me(self):
         return self.call("auth.test")["user_id"]
 
+    def channel_mentions_from(self, user_id, oldest_ts, me):
+        """Messages the lead posted in shared channels mentioning us after oldest_ts.
+
+        Uses search.messages (user-session tokens support it), so it covers every
+        channel the authenticated user can read without walking channel lists.
+        """
+        after = datetime.fromtimestamp(float(oldest_ts) - 86400, tz=timezone.utc)
+        try:
+            out = self.call(
+                "search.messages",
+                query=f"from:<@{user_id}> after:{after:%Y-%m-%d}",
+                count=50,
+            )
+        except RuntimeError:
+            return []  # search unavailable on this token; DM detection still applies
+        matches = out.get("messages", {}).get("matches") or []
+        return [
+            m for m in matches
+            if float(m.get("ts", 0)) > float(oldest_ts) and f"<@{me}>" in m.get("text", "")
+        ]
+
 
 def now_utc():
     return datetime.now(timezone.utc)
@@ -263,9 +284,13 @@ def cmd_tick(args):
            GROUP BY l.id"""
     ).fetchall():
         replies = slack.replies_after(lead["channel_id"], lead["first_ts"], me)
+        where = "dm"
+        if not replies:
+            replies = slack.channel_mentions_from(lead["slack_user_id"], lead["first_ts"], me)
+            where = "channel"
         if replies:
             print(
-                f"reply from {lead['slack_user_id']} ({lead['name']}): "
+                f"reply ({where}) from {lead['slack_user_id']} ({lead['name']}): "
                 f"{replies[-1].get('text', '')[:80]!r} -> cancelling remaining steps"
             )
             con.execute("UPDATE leads SET status='replied' WHERE id=?", (lead["id"],))
