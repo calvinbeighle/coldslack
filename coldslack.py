@@ -277,7 +277,7 @@ def cmd_tick(args):
 
     # 2. Send due steps.
     local_now = datetime.now()
-    if not in_send_window(local_now):
+    if not args.ignore_window and not in_send_window(local_now):
         print(f"outside send window ({local_now:%a %H:%M}); nothing sent")
         return
     due = con.execute(
@@ -340,6 +340,11 @@ def main():
     tick = sub.add_parser("tick", help="poll replies, cancel sequences, send due steps")
     tick.add_argument(
         "--dry-run", action="store_true", help="preview actions without sending"
+    )
+    tick.add_argument(
+        "--ignore-window",
+        action="store_true",
+        help="send even outside the Mon-Fri 09:00-17:00 local window (testing)",
     )
     tick.set_defaults(fn=cmd_tick)
 
