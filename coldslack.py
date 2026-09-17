@@ -75,6 +75,11 @@ def db():
 
 
 def op_field(field):
+    # Env override (COLDSLACK_XOXC_TOKEN / COLDSLACK_XOXD_COOKIE) lets a runner
+    # supply cached credentials so a 30-minute tick never spends 1Password requests.
+    env_val = os.environ.get("COLDSLACK_" + field.upper())
+    if env_val:
+        return env_val.strip()
     return subprocess.run(
         ["op", "item", "get", OP_ITEM]
         + (["--vault", OP_VAULT] if OP_VAULT else [])
