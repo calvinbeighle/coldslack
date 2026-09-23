@@ -27,6 +27,21 @@ Single-file Python 3, stdlib only. Tested on macOS with Python 3.14.
 4. Run `tick` from cron or launchd. It is safe to run as often as you like;
    a send happens at most once (rows move `pending -> sent`).
 
+
+### Channel posts and pre-seeded reply detection
+
+```bash
+./coldslack.py campaign create --name baseten-give1 --sequence seq.json --leads leads.csv \
+  --channel C0C2FRXR1PT --at 2026-09-26T09:25 --seed-ts 1789747484.294319
+```
+
+- `--channel` posts every step into that channel (Slack Connect etc.) instead of the
+  lead's DM. Reply detection then treats ANY message from anyone but us in that
+  channel as a reply.
+- `--at` pins step 1 to a local time instead of the next window opening.
+- `--seed-ts` records our own existing post as a sent step 0, so reply detection is
+  armed from that post onward and a reply that lands before step 1 cancels it.
+
 ## Auth
 
 Credentials are Slack session tokens read from 1Password at runtime via the

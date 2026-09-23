@@ -194,10 +194,22 @@ def cmd_campaign_create(args):
     with open(args.leads) as f:
         for row in csv.DictReader(f):
             lead = con.execute(
-                "INSERT INTO leads (campaign_id, slack_user_id, name) VALUES (?,?,?)",
-                (cid, row["slack_user_id"].strip(), (row.get("name") or "").strip()),
+                "INSERT INTO leads (campaign_id, slack_user_id, name, channel_id) VALUES (?,?,?,?)",
+                (cid, row["slack_user_id"].strip(), (row.get("name") or "").strip(), args.channel),
             )
-            base = next_window_start(datetime.now().replace(tzinfo=None))
+            if args.at:
+                base = datetime.fromisoformat(args.at)
+            else:
+                base = next_window_start(datetime.now().replace(tzinfo=None))
+            if args.seed_ts:
+                # Anchor: Calvin's own last post in the channel/DM, recorded as a sent
+                # step 0 so reply detection runs from it BEFORE step 1 goes out.
+                con.execute(
+                    "INSERT INTO sends (campaign_id, lead_id, step, body, send_at, status, slack_ts, sent_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (cid, lead.lastrowid, 0, "[seed] existing post", args.seed_ts and
+                     datetime.fromtimestamp(float(args.seed_ts)).isoformat(), "sent", args.seed_ts,
+                     datetime.fromtimestamp(float(args.seed_ts), timezone.utc).isoformat()),
+                )
             for i, step in enumerate(steps):
                 send_at = base + timedelta(days=int(step.get("delay_days", 0)))
                 if i > 0:
@@ -354,6 +366,9 @@ def main():
         help="JSON: [{delay_days, body}]; {{name}} substituted",
     )
     create.add_argument("--leads", required=True, help="CSV with slack_user_id,name")
+    create.add_argument("--channel", help="post into this channel id (C...) instead of the lead's DM; reply detection = any non-me message there")
+    create.add_argument("--at", help="step-1 local time YYYY-MM-DDTHH:MM (default: next send-window opening)")
+    create.add_argument("--seed-ts", help="Slack ts of our own last post; recorded as a sent step 0 so a reply before step 1 cancels the send")
     create.set_defaults(fn=cmd_campaign_create)
     for st in ("activate", "pause"):
         sp = csub.add_parser(st)
