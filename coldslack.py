@@ -133,7 +133,7 @@ class Slack:
         """Everything the lead posted in this channel after oldest_ts, thread replies included
         (conversations.history returns top-level messages only). Verified 2026-10-20: the
         in:<#C...> form with a user token returns thread replies without an @mention."""
-        after = datetime.fromtimestamp(float(oldest_ts) - 86400, tz=timezone.utc)
+        after = datetime.fromtimestamp(float(oldest_ts) - 2 * 86400, tz=timezone.utc)
         try:
             out = self.call(
                 "search.messages",
@@ -185,7 +185,7 @@ class Slack:
         Uses search.messages (user-session tokens support it), so it covers every
         channel the authenticated user can read without walking channel lists.
         """
-        after = datetime.fromtimestamp(float(oldest_ts) - 86400, tz=timezone.utc)
+        after = datetime.fromtimestamp(float(oldest_ts) - 2 * 86400, tz=timezone.utc)
         try:
             out = self.call(
                 "search.messages",
