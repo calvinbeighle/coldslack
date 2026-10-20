@@ -446,12 +446,19 @@ def cmd_tick(args):
             )
             continue
         if verdict != 0:
-            print(
-                f"gate: exit {verdict} for {s['lname']} (not CLEAR) -> not sending step {s['step']} this tick"
-            )
+            why = GATE_WORDS.get(verdict, "gate exit %s" % verdict)
+            stop_sequence(con, s, f"held: {why}")
+            print(f"gate: {why} for {s['lname']} -> step {s['step']} not sent; sequence stopped")
+            alert(f"coldslack-{s['id']}", f"Slack follow-up NOT sent, sequence stopped: {s['lname']} step {s['step']} ({why}).")
             continue
-        channel = s["channel_id"] or slack.open_dm(s["slack_user_id"])
-        ts = slack.post(channel, text)
+        try:
+            channel = s["channel_id"] or slack.open_dm(s["slack_user_id"])
+            ts = slack.post(channel, text)
+        except Exception as e:
+            stop_sequence(con, s, f"post failed: {e}")
+            print(f"post failed for {s['lname']} step {s['step']}: {e}; sequence stopped")
+            alert(f"coldslack-post-{s['id']}", f"Slack follow-up FAILED to post, sequence stopped: {s['lname']} step {s['step']}: {str(e)[:80]}")
+            continue
         con.execute("UPDATE leads SET channel_id=? WHERE id=?", (channel, s["lead_id"]))
         con.execute(
             "UPDATE sends SET status='sent', slack_ts=?, sent_at=? WHERE id=?",
@@ -459,6 +466,26 @@ def cmd_tick(args):
         )
         con.commit()
         print(f"sent step {s['step']} to {s['slack_user_id']} ({s['lname']}) ts={ts}")
+
+
+GATE_WORDS = {11: "HOLD: a colleague engaged", 12: "DEFER: touched in last 20h", 13: "OOO auto-reply",
+              20: "UNKNOWN: a channel unreadable", 255: "iMac unreachable"}
+
+
+def stop_sequence(con, s, why):
+    """A step that does not send ends that person's sequence: later steps never go out ahead of it."""
+    con.execute("UPDATE leads SET status='stopped' WHERE id=?", (s["lead_id"],))
+    con.execute("UPDATE sends SET status='cancelled' WHERE lead_id=? AND status='pending'", (s["lead_id"],))
+    con.commit()
+
+
+def alert(key, msg):
+    """Text Calvin (Textbelt via ~/bin/text-calvin, once per key per day). Never raises."""
+    try:
+        subprocess.run([os.path.expanduser("~/bin/text-calvin"), "--key", key, msg],
+                       capture_output=True, text=True, timeout=90)
+    except Exception as e:
+        print(f"alert failed: {e}")
 
 
 GATE_CMD = os.environ.get(
