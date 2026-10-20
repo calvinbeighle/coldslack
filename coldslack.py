@@ -16,6 +16,7 @@ import os
 import csv
 import json
 import random
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -145,8 +146,10 @@ class Slack:
             return []  # search unavailable on this token; DM detection still applies
         matches = out.get("messages", {}).get("matches") or []
         return [
-            m for m in matches
-            if float(m.get("ts", 0)) > float(oldest_ts) and f"<@{me}>" in m.get("text", "")
+            m
+            for m in matches
+            if float(m.get("ts", 0)) > float(oldest_ts)
+            and f"<@{me}>" in m.get("text", "")
         ]
 
 
@@ -195,7 +198,12 @@ def cmd_campaign_create(args):
         for row in csv.DictReader(f):
             lead = con.execute(
                 "INSERT INTO leads (campaign_id, slack_user_id, name, channel_id) VALUES (?,?,?,?)",
-                (cid, row["slack_user_id"].strip(), (row.get("name") or "").strip(), args.channel),
+                (
+                    cid,
+                    row["slack_user_id"].strip(),
+                    (row.get("name") or "").strip(),
+                    args.channel,
+                ),
             )
             if args.at:
                 base = datetime.fromisoformat(args.at)
@@ -206,9 +214,19 @@ def cmd_campaign_create(args):
                 # step 0 so reply detection runs from it BEFORE step 1 goes out.
                 con.execute(
                     "INSERT INTO sends (campaign_id, lead_id, step, body, send_at, status, slack_ts, sent_at) VALUES (?,?,?,?,?,?,?,?)",
-                    (cid, lead.lastrowid, 0, "[seed] existing post", args.seed_ts and
-                     datetime.fromtimestamp(float(args.seed_ts)).isoformat(), "sent", args.seed_ts,
-                     datetime.fromtimestamp(float(args.seed_ts), timezone.utc).isoformat()),
+                    (
+                        cid,
+                        lead.lastrowid,
+                        0,
+                        "[seed] existing post",
+                        args.seed_ts
+                        and datetime.fromtimestamp(float(args.seed_ts)).isoformat(),
+                        "sent",
+                        args.seed_ts,
+                        datetime.fromtimestamp(
+                            float(args.seed_ts), timezone.utc
+                        ).isoformat(),
+                    ),
                 )
             for i, step in enumerate(steps):
                 send_at = base + timedelta(days=int(step.get("delay_days", 0)))
@@ -303,7 +321,9 @@ def cmd_tick(args):
         replies = slack.replies_after(lead["channel_id"], lead["first_ts"], me)
         where = "dm"
         if not replies:
-            replies = slack.channel_mentions_from(lead["slack_user_id"], lead["first_ts"], me)
+            replies = slack.channel_mentions_from(
+                lead["slack_user_id"], lead["first_ts"], me
+            )
             where = "channel"
         if replies:
             print(
@@ -315,7 +335,10 @@ def cmd_tick(args):
                 "UPDATE sends SET status='cancelled' WHERE lead_id=? AND status='pending'",
                 (lead["id"],),
             )
-    con.commit()
+    if live:
+        con.commit()
+    else:
+        con.rollback()  # --dry-run reports cancellations without applying them
 
     # 2. Send due steps.
     local_now = datetime.now()
@@ -341,6 +364,23 @@ def cmd_tick(args):
             continue
         if i > 0:
             time.sleep(random.uniform(*GAP_SECONDS))
+        verdict = engagement_gate(con, s)
+        if verdict == 10:
+            con.execute("UPDATE leads SET status='replied' WHERE id=?", (s["lead_id"],))
+            con.execute(
+                "UPDATE sends SET status='cancelled' WHERE lead_id=? AND status='pending'",
+                (s["lead_id"],),
+            )
+            con.commit()
+            print(
+                f"gate: {s['lname']} engaged on another channel -> cancelling remaining steps"
+            )
+            continue
+        if verdict != 0:
+            print(
+                f"gate: exit {verdict} for {s['lname']} (not CLEAR) -> not sending step {s['step']} this tick"
+            )
+            continue
         channel = s["channel_id"] or slack.open_dm(s["slack_user_id"])
         ts = slack.post(channel, text)
         con.execute("UPDATE leads SET channel_id=? WHERE id=?", (channel, s["lead_id"]))
@@ -350,6 +390,48 @@ def cmd_tick(args):
         )
         con.commit()
         print(f"sent step {s['step']} to {s['slack_user_id']} ({s['lname']}) ts={ts}")
+
+
+GATE_CMD = os.environ.get(
+    "COLDSLACK_GATE",
+    "ssh -o BatchMode=yes -o ConnectTimeout=15 imac-gate check",
+)
+
+
+def engagement_gate(con, s):
+    """Cross-channel check on the iMac (engagement-gate repo) right before a send.
+    Exit 0 = CLEAR; 10 = engaged anywhere (cancel); anything else, including an ssh failure, = do not send."""
+    sent = con.execute(
+        "SELECT slack_ts FROM sends WHERE lead_id=? AND status='sent' AND slack_ts IS NOT NULL",
+        (s["lead_id"],),
+    ).fetchall()
+    tss = sorted(float(r["slack_ts"]) for r in sent)
+    if not tss:
+        return 20
+    cmd = GATE_CMD.split() + [
+        "--sender",
+        f"coldslack:{s['campaign_id']}:{s['id']}",
+        "--person",
+        s["lname"] or "",
+        "--slack",
+        s["slack_user_id"],
+        "--since",
+        "%.6f" % tss[-1],
+    ]
+    if s["channel_id"]:
+        cmd += sum(
+            (["--slack-msg", f"{s['channel_id']}:{r['slack_ts']}"] for r in sent), []
+        )
+    if cmd[0] == "ssh":  # ssh re-joins argv with spaces; quote so names with spaces survive
+        n = GATE_CMD.split().index("check")
+        cmd = cmd[:n] + [" ".join(shlex.quote(a) for a in cmd[n:])]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        print(f"gate: could not run ({e})")
+        return 20
+    print("gate: " + (r.stdout.strip() or r.stderr.strip())[:600])
+    return r.returncode
 
 
 def main():
@@ -366,9 +448,18 @@ def main():
         help="JSON: [{delay_days, body}]; {{name}} substituted",
     )
     create.add_argument("--leads", required=True, help="CSV with slack_user_id,name")
-    create.add_argument("--channel", help="post into this channel id (C...) instead of the lead's DM; reply detection = any non-me message there")
-    create.add_argument("--at", help="step-1 local time YYYY-MM-DDTHH:MM (default: next send-window opening)")
-    create.add_argument("--seed-ts", help="Slack ts of our own last post; recorded as a sent step 0 so a reply before step 1 cancels the send")
+    create.add_argument(
+        "--channel",
+        help="post into this channel id (C...) instead of the lead's DM; reply detection = any non-me message there",
+    )
+    create.add_argument(
+        "--at",
+        help="step-1 local time YYYY-MM-DDTHH:MM (default: next send-window opening)",
+    )
+    create.add_argument(
+        "--seed-ts",
+        help="Slack ts of our own last post; recorded as a sent step 0 so a reply before step 1 cancels the send",
+    )
     create.set_defaults(fn=cmd_campaign_create)
     for st in ("activate", "pause"):
         sp = csub.add_parser(st)
