@@ -129,6 +129,56 @@ class Slack:
     def me(self):
         return self.call("auth.test")["user_id"]
 
+    def lead_posts_in(self, channel, user_id, oldest_ts):
+        """Everything the lead posted in this channel after oldest_ts, thread replies included
+        (conversations.history returns top-level messages only). Verified 2026-10-20: the
+        in:<#C...> form with a user token returns thread replies without an @mention."""
+        after = datetime.fromtimestamp(float(oldest_ts) - 86400, tz=timezone.utc)
+        try:
+            out = self.call(
+                "search.messages",
+                query=f"from:<@{user_id}> in:<#{channel}> after:{after:%Y-%m-%d}",
+                count=50,
+            )
+        except RuntimeError:
+            return []
+        return [
+            m
+            for m in out.get("messages", {}).get("matches") or []
+            if float(m.get("ts", 0)) > float(oldest_ts)
+        ]
+
+    def thread_replies_from(self, channel, our_ts, user_id, oldest_ts):
+        """The lead's replies inside the threads our posts live in (or started). Backstop for
+        search index lag: conversations.replies reads the thread directly."""
+        roots = set()
+        for ts in our_ts:
+            try:
+                m = self.call("conversations.replies", channel=channel, ts=ts, limit=1)[
+                    "messages"
+                ][0]
+                roots.add(m.get("thread_ts") or ts)
+            except (RuntimeError, IndexError, KeyError):
+                continue
+        out = []
+        for root in roots:
+            try:
+                msgs = self.call(
+                    "conversations.replies",
+                    channel=channel,
+                    ts=root,
+                    oldest=oldest_ts,
+                    limit=200,
+                ).get("messages", [])
+            except RuntimeError:
+                continue
+            out += [
+                m
+                for m in msgs
+                if m.get("user") == user_id and float(m.get("ts", 0)) > float(oldest_ts)
+            ]
+        return out
+
     def channel_mentions_from(self, user_id, oldest_ts, me):
         """Messages the lead posted in shared channels mentioning us after oldest_ts.
 
@@ -321,6 +371,23 @@ def cmd_tick(args):
         replies = slack.replies_after(lead["channel_id"], lead["first_ts"], me)
         where = "dm"
         if not replies:
+            replies = slack.lead_posts_in(
+                lead["channel_id"], lead["slack_user_id"], lead["first_ts"]
+            )
+            where = "thread"
+        if not replies:
+            ours = [
+                r["slack_ts"]
+                for r in con.execute(
+                    "SELECT slack_ts FROM sends WHERE lead_id=? AND status='sent' AND slack_ts IS NOT NULL",
+                    (lead["id"],),
+                )
+            ]
+            replies = slack.thread_replies_from(
+                lead["channel_id"], ours, lead["slack_user_id"], lead["first_ts"]
+            )
+            where = "thread"
+        if not replies:
             replies = slack.channel_mentions_from(
                 lead["slack_user_id"], lead["first_ts"], me
             )
@@ -422,7 +489,9 @@ def engagement_gate(con, s):
         cmd += sum(
             (["--slack-msg", f"{s['channel_id']}:{r['slack_ts']}"] for r in sent), []
         )
-    if cmd[0] == "ssh":  # ssh re-joins argv with spaces; quote so names with spaces survive
+    if (
+        cmd[0] == "ssh"
+    ):  # ssh re-joins argv with spaces; quote so names with spaces survive
         n = GATE_CMD.split().index("check")
         cmd = cmd[:n] + [" ".join(shlex.quote(a) for a in cmd[n:])]
     try:
