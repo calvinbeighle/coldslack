@@ -473,8 +473,12 @@ def engagement_gate(con, s):
         (s["lead_id"],),
     ).fetchall()
     tss = sorted(float(r["slack_ts"]) for r in sent)
-    if not tss:
-        return 20
+    if tss:
+        since = "%.6f" % tss[-1]
+    else:  # first step with no seed: anything since the campaign was created counts
+        since = con.execute(
+            "SELECT created_at FROM campaigns WHERE id=?", (s["campaign_id"],)
+        ).fetchone()[0]
     cmd = GATE_CMD.split() + [
         "--sender",
         f"coldslack:{s['campaign_id']}:{s['id']}",
@@ -483,7 +487,7 @@ def engagement_gate(con, s):
         "--slack",
         s["slack_user_id"],
         "--since",
-        "%.6f" % tss[-1],
+        since,
     ]
     if s["channel_id"]:
         cmd += sum(
