@@ -145,7 +145,7 @@ class Slack:
         return [
             m
             for m in out.get("messages", {}).get("matches") or []
-            if float(m.get("ts", 0)) > float(oldest_ts)
+            if float(m.get("ts", 0)) > float(oldest_ts) and m.get("user") != self.me()
         ]
 
     def thread_replies_from(self, channel, our_ts, user_id, oldest_ts):
@@ -175,7 +175,9 @@ class Slack:
             out += [
                 m
                 for m in msgs
-                if m.get("user") == user_id and float(m.get("ts", 0)) > float(oldest_ts)
+                if m.get("user") == user_id
+                and user_id != self.me()
+                and float(m.get("ts", 0)) > float(oldest_ts)
             ]
         return out
 
