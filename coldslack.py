@@ -424,6 +424,7 @@ def cmd_tick(args):
     if not due:
         print("tick complete: nothing to do")
         return
+    done_leads = set()
     for i, s in enumerate(due):
         text = render(s["body"], {"name": s["lname"]})
         if not live:
@@ -431,6 +432,8 @@ def cmd_tick(args):
                 f"[DRY RUN] would send step {s['step']} to {s['slack_user_id']} ({s['lname']}): {text[:80]!r}"
             )
             continue
+        if s["lead_id"] in done_leads:
+            continue  # this person's sequence was stopped or cancelled earlier in this tick
         if i > 0:
             time.sleep(random.uniform(*GAP_SECONDS))
         verdict = engagement_gate(con, s)
@@ -441,12 +444,14 @@ def cmd_tick(args):
                 (s["lead_id"],),
             )
             con.commit()
+            done_leads.add(s["lead_id"])
             print(
                 f"gate: {s['lname']} engaged on another channel -> cancelling remaining steps"
             )
             continue
         if verdict != 0:
             why = GATE_WORDS.get(verdict, "gate exit %s" % verdict)
+            done_leads.add(s["lead_id"])
             stop_sequence(con, s, f"held: {why}")
             print(f"gate: {why} for {s['lname']} -> step {s['step']} not sent; sequence stopped")
             alert(f"coldslack-{s['id']}", f"Slack follow-up NOT sent, sequence stopped: {s['lname']} step {s['step']} ({why}).")
@@ -455,6 +460,7 @@ def cmd_tick(args):
             channel = s["channel_id"] or slack.open_dm(s["slack_user_id"])
             ts = slack.post(channel, text)
         except Exception as e:
+            done_leads.add(s["lead_id"])
             stop_sequence(con, s, f"post failed: {e}")
             print(f"post failed for {s['lname']} step {s['step']}: {e}; sequence stopped")
             alert(f"coldslack-post-{s['id']}", f"Slack follow-up FAILED to post, sequence stopped: {s['lname']} step {s['step']}: {str(e)[:80]}")
